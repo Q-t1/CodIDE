@@ -1,5 +1,5 @@
 # The `coding` IDE: a two-pane zellij workspace — yazi as a file sidebar on the
-# left, Neovim (see ./nvim.nix) on the right — bridged by a per-session nvim
+# left, Neovim (see ./nvim.nix) on the right — bridged by a per-tab nvim
 # socket so yazi/fif open files as native nvim tabs.
 #
 # This is a Home Manager module, exported as `homeModules.default` by this
@@ -38,17 +38,34 @@ let
   zellijBin = "${pkgs.zellij}/bin/zellij";
   lazygitBin = "${pkgs.lazygit}/bin/lazygit";
 
-  # Starts Neovim listening on a session-scoped socket so yazi, fif, and
-  # any other pane in the same zellij session can open files into the same
-  # instance via --remote, giving a barbar buffer tabline instead of zellij
-  # stacked panes.
+  # Prints the socket path for *this tab's* Neovim. A session can hold more
+  # than one "Coding" tab (the `coding` function's `-n "$ZELLIJ"` branch adds
+  # one instead of starting a new session), each running its own yazi +
+  # Neovim pair — so the socket has to be scoped per tab, not just per
+  # session, or the second tab's Neovim fails to bind the first one's socket
+  # (EADDRINUSE, pane exits immediately) while that tab's yazi keeps
+  # "succeeding" by silently opening files into the first tab's Neovim.
+  # `list-panes --tab` is scoped to the calling pane's own tab, so filtering
+  # it down to this pane's id gives every pane in a tab the same tab_id
+  # (mirrors codingNvim's own tab-rename lookup below).
+  tabScopedSock = pkgs.writeShellScript "coding-tab-socket" ''
+    tab_id=$(${zellijBin} action list-panes --tab --json 2>/dev/null |
+      ${pkgs.jq}/bin/jq -r --argjson pane "$ZELLIJ_PANE_ID" \
+        '.[] | select((.is_plugin | not) and .id == $pane) | .tab_id' 2>/dev/null)
+    printf '/tmp/nvim-%s-%s.sock' "$ZELLIJ_SESSION_NAME" "''${tab_id:-0}"
+  '';
+
+  # Starts Neovim listening on a tab-scoped socket so yazi, fif, and any
+  # other pane in the same zellij tab can open files into the same instance
+  # via --remote, giving a barbar buffer tabline instead of zellij stacked
+  # panes.
   #
   # It also names its own zellij tab "Coding | <folder>": a layout can't
   # interpolate the directory, so a fresh `coding` session would otherwise keep
   # the static layout name. The tab is resolved from this pane's id rather than
   # "the focused tab", so switching tabs during startup can't rename the wrong one.
   codingNvim = pkgs.writeShellScript "coding-nvim" ''
-    sock="/tmp/nvim-$ZELLIJ_SESSION_NAME.sock"
+    sock=$(${tabScopedSock})
     tab_id=$(${zellijBin} action list-panes --tab --json 2>/dev/null |
       ${pkgs.jq}/bin/jq -r --argjson pane "$ZELLIJ_PANE_ID" \
         '.[] | select((.is_plugin | not) and .id == $pane) | .tab_id' 2>/dev/null)
@@ -56,14 +73,14 @@ let
     exec ${nvimBin} --listen "$sock" "$@"
   '';
 
-  # Opens $1 in the session's Neovim via its socket, then focuses the editor
+  # Opens $1 in this tab's Neovim via its socket, then focuses the editor
   # pane. CodingIdeFocusEditor (nvim.nix) first moves nvim off any terminal
   # or panel window so --remote's `:drop` opens the file as a buffer (a barbar
   # tab) in an editor window. Called from yazi (left pane); move-focus Right
   # always lands on the editor column.
   openFileInNvim = pkgs.writeShellScript "open-file-in-nvim" ''
     file=$(${pkgs.coreutils}/bin/realpath -- "$1")
-    sock="/tmp/nvim-$ZELLIJ_SESSION_NAME.sock"
+    sock=$(${tabScopedSock})
     ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
     ${nvimBin} --server "$sock" --remote "$file"
     ${zellijBin} action move-focus Right
@@ -72,7 +89,7 @@ let
   # yazi's built-in `S`/`s` search only ever surfaces files (never a matched
   # line) and its results don't route through the `edit` opener reliably. These
   # replace both with fzf pickers — the same flow as the `fif` shell function —
-  # that open the pick in the session's Neovim over the socket and (for content
+  # that open the pick in the tab's Neovim over the socket and (for content
   # search) jump to the matched line, then focus the editor pane on the right.
   #
   # Launched from yazi via `shell "<script>" --block`, so fzf takes over the
@@ -103,7 +120,7 @@ let
     line=''${rest%%:*}
     [ -z "$file" ] && exit 0
     abs=$(realpath -- "$file")
-    sock="/tmp/nvim-$ZELLIJ_SESSION_NAME.sock"
+    sock=$(${tabScopedSock})
     if [ -S "$sock" ]; then
       ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
       ${nvimBin} --server "$sock" --remote "$abs"
@@ -130,7 +147,7 @@ let
     ) || exit 0
     [ -z "$file" ] && exit 0
     abs=$(realpath -- "$file")
-    sock="/tmp/nvim-$ZELLIJ_SESSION_NAME.sock"
+    sock=$(${tabScopedSock})
     if [ -S "$sock" ]; then
       ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
       ${nvimBin} --server "$sock" --remote "$abs"
@@ -328,7 +345,7 @@ in
 
       # `fif <pattern> [rg-args]` — interactive ripgrep | fzf content search with
       # bat preview. Selecting a match opens the file at the matched line in the
-      # session's Neovim via its socket, then moves focus to the editor pane.
+      # tab's Neovim via its socket, then moves focus to the editor pane.
       fif() {
         if [[ $# -eq 0 ]]; then
           print -u2 "usage: fif <pattern> [rg-args...]"; return 1
@@ -347,7 +364,7 @@ in
         rest="''${clean#*:}"
         line="''${rest%%:*}"
         abs=$(realpath -- "$file")
-        sock="/tmp/nvim-''${ZELLIJ_SESSION_NAME}.sock"
+        sock=$(${tabScopedSock})
         if [[ -S "''${sock}" ]]; then
           ${zellijBin} action move-focus Up
           ${nvimBin} --server "''${sock}" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
@@ -383,7 +400,7 @@ in
           sort_dir_first = true;
         };
 
-        # Open (Enter) sends the picked file to the session's Neovim via its
+        # Open (Enter) sends the picked file to the tab's Neovim via its
         # socket (--remote), which opens it as a buffer / barbar tab. block=false
         # keeps yazi visible as the sidebar. realpath is required: yazi may pass
         # a path relative to its cwd, but the socket command resolves against
@@ -431,7 +448,7 @@ in
 
       # Replace yazi's built-in fd/rg search (which can't open at a matched line
       # and doesn't route content-search results through the `edit` opener) with
-      # fzf pickers that open the pick in the session's Neovim — the rg one jumps
+      # fzf pickers that open the pick in the tab's Neovim — the rg one jumps
       # to the matched line. prepend_keymap wins over the defaults, so `s`/`S`
       # keep their familiar meaning. Run with --block so fzf owns the pane while
       # picking (see yaziRgSearch / yaziFdSearch in the let block above).
@@ -508,7 +525,7 @@ in
       #   │       │├────────── terminal ───────────┤
       #   └───────┘└───────────────────────────────┘
       #
-      # Neovim runs with --listen on a session-scoped socket (coding-nvim wrapper).
+      # Neovim runs with --listen on a tab-scoped socket (coding-nvim wrapper).
       # Enter on a file in yazi calls open-file-in-nvim which does --remote,
       # opening the file as a buffer. The barbar tabline at the top of the
       # editor pane is the open-files list. Alt-t adds a new zellij terminal tab.
