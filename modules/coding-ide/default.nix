@@ -405,9 +405,16 @@ in
         # keeps yazi visible as the sidebar. realpath is required: yazi may pass
         # a path relative to its cwd, but the socket command resolves against
         # nvim's cwd → wrong file from a subdir without it.
+        #
+        # `%s` (not `$1`) is yazi's placeholder for the target file: yazi's
+        # `run` string is its own template language, substituted before the
+        # shell ever sees it — `$1` is never populated, since yazi doesn't
+        # invoke openers with the file as a positional shell argument. With
+        # `$1` here, every open silently no-ops (empty path → failed realpath
+        # → nvim --remote with no file), with no error visible anywhere.
         opener.edit = [
           {
-            run = "${openFileInNvim} \"$1\"";
+            run = "${openFileInNvim} %s";
             desc = "Open in editor";
             block = false;
           }
