@@ -197,7 +197,7 @@ in
     # theme without per-plugin wiring. barbar is not among those defaults, so
     # it is switched on explicitly. Catppuccin italicises comments by default
     # (parity with the old vscode theme), and term_colors themes the
-    # toggleterm / :terminal palette to match.
+    # :terminal palette (the Claude split) to match.
     colorschemes.catppuccin = {
       enable = true;
       settings = {
@@ -371,17 +371,6 @@ in
             split_side = "right";
             split_width_percentage = 0.35;
           };
-        };
-      };
-
-      # Integrated terminal panel at the bottom (VSCode's Ctrl-` panel).
-      # Opened with <leader>t (Space t) — Windows Terminal can't deliver
-      # Ctrl-` to a WSL app, so the panel is bound to a leader key instead.
-      toggleterm = {
-        enable = true;
-        settings = {
-          direction = "horizontal";
-          size = 14;
         };
       };
 
@@ -794,16 +783,20 @@ in
       })
 
       -- Full git UI (stage/commit/branch/rebase) floated over the editor, the
-      -- git-workflow companion to the inline gitsigns hunk keymaps. Reuses the
-      -- toggleterm runtime already loaded for the bottom terminal panel.
-      local lazygit = require("toggleterm.terminal").Terminal:new({
-        cmd = "lazygit",
-        direction = "float",
-        float_opts = { border = "curved" },
-        hidden = true,
-      })
+      -- git-workflow companion to the inline gitsigns hunk keymaps. It runs in
+      -- a floating zellij pane, zellij being the IDE's one terminal system;
+      -- quitting lazygit closes the pane. Outside zellij (single-file $EDITOR
+      -- use) there is nothing to float it in, and `gitview` is the way in.
       vim.keymap.set("n", "<leader>gg", function()
-        lazygit:toggle()
+        if vim.env.ZELLIJ == nil then
+          vim.notify("lazygit floats in a zellij pane; outside zellij, use `gitview`", vim.log.levels.WARN)
+          return
+        end
+        vim.system({
+          "zellij", "run", "--floating", "--close-on-exit", "--name", "lazygit",
+          "--cwd", vim.uv.cwd(), "--width", "90%", "--height", "90%", "-x", "5%", "-y", "5%",
+          "--", "${lib.getExe pkgs.lazygit}",
+        })
       end, { desc = "Lazygit" })
 
       -- kubeconform: strict Kubernetes manifest conformance, complementing the
@@ -890,38 +883,6 @@ in
         end,
       })
 
-      -- Terminal tab system: <leader>T creates a new horizontal terminal tab,
-      -- <leader>tp / <leader>tn cycle through them in normal mode.
-      -- <leader>t toggles whichever terminal is currently active (after
-      -- which-key's short wait for a second key). Leader keys rather than
-      -- Alt chords: zellij owns Alt-t/[/], and Alt is Option on macOS.
-      do
-        local term_count = 1
-        local term_active = 1
-
-        local function term_go(id)
-          vim.cmd("ToggleTerm count=" .. id)
-          term_active = id
-        end
-
-        vim.keymap.set("n", "<leader>t", function()
-          term_go(term_active)
-        end, { desc = "Toggle terminal" })
-
-        vim.keymap.set("n", "<leader>T", function()
-          term_count = term_count + 1
-          term_go(term_count)
-        end, { desc = "New terminal tab" })
-
-        vim.keymap.set("n", "<leader>tp", function()
-          if term_active > 1 then term_go(term_active - 1) end
-        end, { desc = "Previous terminal tab" })
-
-        vim.keymap.set("n", "<leader>tn", function()
-          if term_active < term_count then term_go(term_active + 1) end
-        end, { desc = "Next terminal tab" })
-      end
-
       -- flash.nvim jump motions. `s` + two chars labels every visible match and
       -- teleports there (normal/visual/operator-pending). `S` jumps by treesitter
       -- node, but only in normal/operator mode so nvim-surround keeps visual `S`
@@ -988,7 +949,6 @@ in
         yamllint
         kubeconform
         kustomize
-        lazygit # full git UI, floated on <leader>gg (see extraConfigLua)
         ripgrep # `rg` backs grug-far's find & replace (and Telescope live_grep)
       ]
       # wl-copy/wl-paste: the fast path for the WSL clipboard bridge only. It is

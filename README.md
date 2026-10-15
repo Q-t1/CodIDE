@@ -91,7 +91,7 @@ they get through.
 | `Ctrl-o` / `Ctrl-i` | Neovim | Navigate back / forward |
 | `Ctrl-j` / `Ctrl-k` on a selection | Neovim | Move the lines down / up (`V` first for one line) |
 | `Space /` | Neovim | Toggle comment |
-| `Space T` · `Space tn` / `Space tp` | Neovim | New Neovim terminal · next / previous one |
+| `Space gg` | Neovim | lazygit in a floating pane |
 | `Ctrl-q` | Neovim | Visual block (Windows Terminal pastes on `Ctrl-v`) |
 
 While the prefix is active, the status bar lists its everyday keys. `Alt-h/j/k/l`,
