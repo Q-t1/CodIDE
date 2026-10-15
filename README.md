@@ -8,8 +8,10 @@ the editor, **zellij** holding the two together, plus **lazygit** and the
 ```
 ┌ files ┐┌──────── editor (nvim) ────────┐
 │ yazi  ││ [file1] │ [file2] │ [file3] … │  ← barbar tabline
-│       │├────────── terminal ───────────┤
+│       ││                               │
 └───────┘└───────────────────────────────┘
+┌─────────────── terminal ───────────────┐
+└────────────────────────────────────────┘
 ```
 
 Neovim runs with `--listen` on a per-tab socket, so picking a file in yazi
@@ -62,9 +64,38 @@ Then, in a shell:
 | `fif <pattern>`  | ripgrep + fzf content search; the pick opens at the matched line in the tab's Neovim. |
 
 Inside the IDE: `Enter` in yazi opens a file in the editor, `s` / `S` are
-fuzzy file / content search, `Alt-t` adds a terminal tab, `Alt-q` closes a tab,
-and Neovim carries a VSCode-shaped keymap (`Ctrl-s` save, `Ctrl-p` quick open,
-`<leader>` is space).
+fuzzy file / content search, and Neovim carries a VSCode-shaped keymap
+(`Ctrl-s` save, `Ctrl-p` quick open, `Ctrl-b` back to yazi, `<leader>` is
+space).
+
+## Keys
+
+Every shortcut gets through a stock Ghostty on macOS and a stock Windows
+Terminal, on a French layout as well, with no terminal configuration. So the
+IDE is driven by `Ctrl`+letter chords, Neovim's `Space` leader and one zellij
+prefix. `Alt` is Option on a Mac and types characters there. Windows Terminal
+keeps `Alt`+arrows and most `Ctrl+Shift` chords for itself, and `Cmd` never
+reaches a terminal app. Shortcuts built on those still exist as extras where
+they get through.
+
+| Keys | Where | Does |
+|------|-------|------|
+| `Ctrl-h/j/k/l` | Neovim, yazi | Move between Neovim splits, then on to the next pane |
+| `Ctrl-g` then `h/j/k/l` | anywhere | Move to the pane in that direction (the way out of the shell) |
+| `Ctrl-g` then `t` | anywhere | New terminal in the bottom stack |
+| `Ctrl-g` then `c` / `n` / `p` | anywhere | New / next / previous zellij tab |
+| `Ctrl-g` then `z` / `f` / `x` / `q` | anywhere | Zoom pane / floating panes / close pane / close tab |
+| `Ctrl-g` then `r` / `s` / `d` | anywhere | Resize mode / session manager / detach |
+| `Ctrl-g` `Ctrl-g` | anywhere | A literal `Ctrl-g` for the app |
+| `Ctrl-s` · `Ctrl-p` · `Ctrl-b` | Neovim | Save · quick open · focus yazi |
+| `Ctrl-o` / `Ctrl-i` | Neovim | Navigate back / forward |
+| `Ctrl-j` / `Ctrl-k` on a selection | Neovim | Move the lines down / up (`V` first for one line) |
+| `Space /` | Neovim | Toggle comment |
+| `Space T` · `Space tn` / `Space tp` | Neovim | New Neovim terminal · next / previous one |
+| `Ctrl-q` | Neovim | Visual block (Windows Terminal pastes on `Ctrl-v`) |
+
+While the prefix is active, the status bar lists its everyday keys. `Alt-h/j/k/l`,
+`Alt-t` and `Alt-q` still work where `Alt` exists (Windows Terminal, Linux).
 
 ## Options
 

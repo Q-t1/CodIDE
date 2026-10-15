@@ -713,10 +713,12 @@ in
       -- Seamless window/pane navigation across Neovim splits and zellij panes.
       -- Ctrl-h/j/k/l moves between Neovim splits; at the outermost split it hops
       -- to the adjacent zellij pane instead, so the two read as one continuous
-      -- space (the zellij analogue of vim-tmux-navigator). Moving *into* Neovim
-      -- from another zellij pane uses zellij's own Alt-h/j/k/l — in a shell pane
-      -- Ctrl-h is backspace, so it can't be the universal mover. The zellij keys
-      -- that would otherwise shadow these Ctrl chords are freed in ./default.nix.
+      -- space (the zellij analogue of vim-tmux-navigator). yazi takes part too
+      -- (Ctrl-l / Ctrl-j, see ./default.nix). The shell pane can't — there
+      -- Ctrl-h is backspace and Ctrl-k/l edit the line — so out of it you use
+      -- zellij's Ctrl-g prefix (Ctrl-g k), or Alt-k where Alt exists. The
+      -- zellij keys that would otherwise shadow these Ctrl chords are freed in
+      -- ./default.nix.
       local function zellij_nav(nvim_dir, zellij_dir)
         local before = vim.api.nvim_get_current_win()
         vim.cmd.wincmd(nvim_dir)
@@ -888,9 +890,11 @@ in
         end,
       })
 
-      -- Terminal tab system: <A-t> creates a new horizontal terminal tab,
-      -- <A-[> / <A-]> cycle through them in normal mode.
-      -- <leader>t toggles whichever terminal is currently active.
+      -- Terminal tab system: <leader>T creates a new horizontal terminal tab,
+      -- <leader>tp / <leader>tn cycle through them in normal mode.
+      -- <leader>t toggles whichever terminal is currently active (after
+      -- which-key's short wait for a second key). Leader keys rather than
+      -- Alt chords: zellij owns Alt-t/[/], and Alt is Option on macOS.
       do
         local term_count = 1
         local term_active = 1
@@ -904,16 +908,16 @@ in
           term_go(term_active)
         end, { desc = "Toggle terminal" })
 
-        vim.keymap.set({ "n", "t" }, "<A-t>", function()
+        vim.keymap.set("n", "<leader>T", function()
           term_count = term_count + 1
           term_go(term_count)
         end, { desc = "New terminal tab" })
 
-        vim.keymap.set("n", "<A-[>", function()
+        vim.keymap.set("n", "<leader>tp", function()
           if term_active > 1 then term_go(term_active - 1) end
         end, { desc = "Previous terminal tab" })
 
-        vim.keymap.set("n", "<A-]>", function()
+        vim.keymap.set("n", "<leader>tn", function()
           if term_active < term_count then term_go(term_active + 1) end
         end, { desc = "Next terminal tab" })
       end
@@ -994,9 +998,13 @@ in
 
     # VSCode-style keybindings.
     #
-    # Terminal caveat: Windows Terminal cannot deliver most Ctrl-Shift-<key>
-    # chords to a WSL app (no kitty keyboard protocol), so those are marked
-    # "best effort" and each has a reliable F-key or <leader> equivalent.
+    # Terminal caveat: every action has a key that reaches Neovim through a
+    # stock Ghostty on macOS and a stock Windows Terminal, on a French layout
+    # too: a Ctrl+letter chord or a <leader> sequence (see the zellij keybinds
+    # in ./default.nix for the full rule). Ctrl+Shift chords (most of which
+    # Windows Terminal keeps for itself), Ctrl+punctuation (Shift or AltGr on
+    # AZERTY) and Alt chords (Option on macOS) are only extras, marked "best
+    # effort". F-keys work everywhere, but behind Fn on a Mac keyboard.
     keymaps = [
       # -- Command palette / quick open --------------------------------------
       {
@@ -1118,14 +1126,34 @@ in
           "c"
         ];
         key = "<C-v>";
-        action = "<C-r>+"; # normal-mode <C-v> stays visual-block
+        # Windows Terminal pastes on Ctrl-v itself, to the same effect; the
+        # mapping serves Ghostty. Normal-mode <C-v> stays visual-block, with
+        # <C-q> as the spelling that gets past Windows Terminal.
+        action = "<C-r>+";
         options.desc = "Paste from system clipboard";
       }
 
       # -- Comment toggle (Ctrl-/) -------------------------------------------
+      # <leader>/ is the reliable one: on AZERTY `/` is Shift-:, so Ctrl-/
+      # can't be typed. gcc / gc (Comment.nvim) work too.
       {
         mode = "n";
-        key = "<C-/>";
+        key = "<leader>/";
+        action = "<cmd>lua require('Comment.api').toggle.linewise.current()<cr>";
+        options.desc = "Toggle comment";
+      }
+      {
+        mode = "v";
+        key = "<leader>/";
+        action = "<Plug>(comment_toggle_linewise_visual)";
+        options = {
+          remap = true;
+          desc = "Toggle comment";
+        };
+      }
+      {
+        mode = "n";
+        key = "<C-/>"; # best effort
         action = "<cmd>lua require('Comment.api').toggle.linewise.current()<cr>";
         options.desc = "Toggle comment";
       }
@@ -1154,48 +1182,23 @@ in
         };
       }
 
-      # -- Move / duplicate lines (Alt-Up/Down) ------------------------------
-      {
-        mode = "n";
-        key = "<A-Down>";
-        action = "<cmd>m .+1<cr>==";
-        options.desc = "Move line down";
-      }
-      {
-        mode = "n";
-        key = "<A-Up>";
-        action = "<cmd>m .-2<cr>==";
-        options.desc = "Move line up";
-      }
-      {
-        mode = "i";
-        key = "<A-Down>";
-        action = "<esc><cmd>m .+1<cr>==gi";
-        options.desc = "Move line down";
-      }
-      {
-        mode = "i";
-        key = "<A-Up>";
-        action = "<esc><cmd>m .-2<cr>==gi";
-        options.desc = "Move line up";
-      }
+      # -- Move lines (VSCode's Alt-Up/Down) ---------------------------------
+      # Alt-arrows never reach Neovim here (zellij and Windows Terminal both
+      # move pane focus with them; Ghostty rewrites Option-Left/Right on
+      # macOS), so moving lines is Ctrl-j / Ctrl-k on a visual selection — V
+      # first for a single line. In normal mode those chords stay the pane
+      # navigation (see extraConfigLua).
       {
         mode = "v";
-        key = "<A-Down>";
+        key = "<C-j>";
         action = ":m '>+1<cr>gv=gv";
         options.desc = "Move selection down";
       }
       {
         mode = "v";
-        key = "<A-Up>";
+        key = "<C-k>";
         action = ":m '<-2<cr>gv=gv";
         options.desc = "Move selection up";
-      }
-      {
-        mode = "n";
-        key = "<A-S-Down>"; # best effort
-        action = "<cmd>t.<cr>";
-        options.desc = "Duplicate line down";
       }
 
       # -- Code navigation (F-keys mirror VSCode) ----------------------------
@@ -1235,18 +1238,8 @@ in
         action = "<cmd>lua vim.diagnostic.jump({ count = -1, float = true })<cr>";
         options.desc = "Previous problem";
       }
-      {
-        mode = "n";
-        key = "<A-Left>";
-        action = "<C-o>";
-        options.desc = "Navigate back";
-      }
-      {
-        mode = "n";
-        key = "<A-Right>";
-        action = "<C-i>";
-        options.desc = "Navigate forward";
-      }
+      # Navigate back / forward is Neovim's own Ctrl-o / Ctrl-i (VSCode's
+      # Alt-Left/Right can't reach Neovim, see "Move lines" above).
 
       # -- Format ------------------------------------------------------------
       {

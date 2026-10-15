@@ -198,8 +198,17 @@ let
   # tab-bar on top, and a zjstatus strip on the bottom showing the session
   # name (left) and the git branch + clock (right). The branch command appends
   # a " *" when the tree is dirty (tracked changes or untracked files), so the
-  # status bar doubles as a "you have uncommitted work" indicator. Factored out
-  # here so the two layouts stay identical instead of drifting.
+  # status bar doubles as a "you have uncommitted work" indicator; it runs in
+  # the focused pane's directory, so it follows the project in view. The
+  # centre stays empty in Normal mode and lists the everyday Ctrl-g prefix keys
+  # (or the resize-mode keys) while that mode is active — there is no zellij
+  # status-bar plugin to show them otherwise. Factored out here so the
+  # two layouts stay identical instead of drifting.
+  #
+  # zjstatus reads flat keys only (`datetime_timezone`, not a `datetime { }`
+  # block — a nested block reaches it as raw text, newline included, and
+  # wipes the whole bar). It splits `_command` itself, honouring quotes but
+  # keeping backslashes, so the script stays free of them.
   zellijChrome = ''
     pane size=1 borderless=true {
         plugin location="zellij:tab-bar"
@@ -208,20 +217,28 @@ let
     pane size=1 borderless=true {
         plugin location="file:${pkgs.zellijPlugins.zjstatus}" {
             format_left   "#[fg=#cba6f7,bold] {session} "
-            format_center ""
+            format_center "{mode}"
             format_right  "{command_git_branch}{datetime}"
+            // When the prefix hint doesn't fit beside them, the session name
+            // and branch/clock give way to it instead of the bar overflowing.
+            // The hint itself stays under 80 columns: zjstatus can't shrink
+            // a centre wider than the window, and the whole bar breaks.
+            format_hide_on_overlength "true"
+            format_precedence         "clr"
 
-            command_git_branch {
-                command  "bash"
-                args     "-c" "b=$(git -C #{cwd} branch --show-current 2>/dev/null) || exit 0; [ -z \"$b\" ] && exit 0; [ -n \"$(git -C #{cwd} status --porcelain 2>/dev/null)\" ] && b=\"$b *\"; printf %s \"$b\""
-                format   "#[fg=#a6e3a1] ${icons.gitBranch} {stdout} "
-                interval "5"
-            }
+            mode_normal          ""
+            mode_tmux            "#[bg=#cba6f7,fg=#1e1e2e,bold] CTRL-G #[fg=#cba6f7] hjkl focus · t term · c/n/p tab · z zoom · x/q close · r resize "
+            mode_resize          "#[bg=#f9e2af,fg=#1e1e2e,bold] RESIZE #[fg=#f9e2af] h/j/k/l grow · H/J/K/L shrink · Esc done "
+            mode_default_to_mode "normal"
 
-            datetime {
-                format   "#[fg=#6c7086,italic] %H:%M "
-                timezone "Europe/Paris"
-            }
+            command_git_branch_command  "sh -c 'b=$(git branch --show-current 2>/dev/null) || exit 0; [ -n \"$b\" ] || exit 0; [ -z \"$(git status --porcelain 2>/dev/null)\" ] || b=\"$b *\"; printf %s \"$b\"'"
+            command_git_branch_cwd      "{focused_pane_cwd}"
+            command_git_branch_format   "#[fg=#a6e3a1] ${icons.gitBranch} {stdout} "
+            command_git_branch_interval "5"
+
+            datetime          "#[fg=#6c7086,italic] {format} "
+            datetime_format   "%H:%M"
+            datetime_timezone "Europe/Paris"
         }
     }
   '';
@@ -332,9 +349,10 @@ in
       [[ $- == *i* ]] && stty -ixon 2>/dev/null
 
       # `coding [target]` opens the IDE inside a zellij "coding" layout (yazi file
-      # pane on the left, Neovim + a shell strip on the right), rooted at the target
-      # so yazi, the LSP and telescope all use that project. A file target skips the
-      # layout and just edits the file (keeps single-file / $EDITOR-style use fast).
+      # pane on the left, Neovim on the right, a shell strip across the bottom),
+      # rooted at the target so yazi, the LSP and telescope all use that project. A
+      # file target skips the layout and just edits the file (keeps single-file /
+      # $EDITOR-style use fast).
       # Inside an existing zellij session it adds a tab instead of nesting.
       coding() {
         local target="''${1:-.}"
@@ -402,9 +420,12 @@ in
         file="''${clean%%:*}"
         rest="''${clean#*:}"
         line="''${rest%%:*}"
-        # fif runs in the terminal strip under the editor, hence Up.
+        # fif runs in the terminal strip, which spans both yazi and the editor:
+        # Up lands on whichever was focused last, and Right then settles on the
+        # editor (a no-op when Up already landed there).
         if ${lib.getExe openInTabNvim} "$file" "$line"; then
           ${zellij} action move-focus Up
+          ${zellij} action move-focus Right
         else
           nvim "$(realpath -- "$file")" "+$line"
         fi
@@ -505,6 +526,19 @@ in
           run = ''shell "${lib.getExe yaziFdSearch}" --block'';
           desc = "Search files by name (fd) → open";
         }
+        # yazi's half of the seamless Ctrl-h/j/k/l pane navigation (Neovim's
+        # half is in nvim.nix): the editor is to the right, the terminal strip
+        # below. Both chords are unbound in yazi's file list.
+        {
+          on = "<C-l>";
+          run = ''shell "${zellij} action move-focus right"'';
+          desc = "Focus the editor pane";
+        }
+        {
+          on = "<C-j>";
+          run = ''shell "${zellij} action move-focus down"'';
+          desc = "Focus the terminal pane";
+        }
       ];
 
       # Catppuccin Mocha (mauve) — see the let binding at the top of this file.
@@ -544,9 +578,9 @@ in
         copy_command = "pbcopy";
       };
 
-      # Full-screen lazygit tab, launched by `gitview`. Alt-t still adds a
-      # terminal below if needed; lazygit's own bottom panel handles most shell
-      # needs (press `e` to open the embedded shell in a lazygit split).
+      # Full-screen lazygit tab, launched by `gitview`. Ctrl-g t (or Alt-t) still
+      # adds a terminal below if needed; lazygit's own bottom panel handles most
+      # shell needs (press `e` to open the embedded shell in a lazygit split).
       layouts.git = ''
         layout {
             default_tab_template {
@@ -564,13 +598,16 @@ in
       #
       #   ┌ files ┐┌──────── editor (nvim) ────────┐
       #   │ yazi  ││ [file1] │ [file2] │ [file3] … │  ← barbar tabline (top)
-      #   │       │├────────── terminal ───────────┤
+      #   │       ││                               │
       #   └───────┘└───────────────────────────────┘
+      #   ┌─────────────── terminal ───────────────┐
+      #   └────────────────────────────────────────┘
       #
       # Neovim runs with --listen on a tab-scoped socket (coding-nvim wrapper).
       # Enter on a file in yazi calls open-file-in-nvim which does --remote,
       # opening the file as a buffer. The barbar tabline at the top of the
-      # editor pane is the open-files list. Alt-t adds a new zellij terminal tab.
+      # editor pane is the open-files list. Ctrl-g t (or Alt-t) adds a terminal
+      # to the stack.
       layouts.coding = ''
         layout {
             default_tab_template {
@@ -578,47 +615,83 @@ in
             }
             // Placeholder: coding-nvim renames it to "Coding | <folder>".
             tab name="Coding" focus=true {
-                pane split_direction="vertical" {
-                    pane size="24%" name="files" focus=true {
-                        command "${lib.getExe config.programs.yazi.finalPackage}"
-                    }
-                    pane split_direction="horizontal" {
-                        pane size="80%" name="editor" {
+                pane split_direction="horizontal" {
+                    pane size="80%" split_direction="vertical" {
+                        pane size="24%" name="files" focus=true {
+                            command "${lib.getExe config.programs.yazi.finalPackage}"
+                        }
+                        pane name="editor" {
                             command "${lib.getExe codingNvim}"
                         }
-                        pane stacked=true {
-                            pane name="terminal"
-                        }
+                    }
+                    pane stacked=true {
+                        pane name="terminal"
                     }
                 }
             }
         }
       '';
 
-      # zellij is modal and, in its Normal mode, intercepts a handful of Ctrl
-      # chords before the running app sees them — several of which the nixvim IDE
-      # (nvim.nix) relies on, most importantly Ctrl-s (save). Free those in Normal
-      # mode so they reach Neovim:
-      #   Ctrl-s save · Ctrl-p quick-open / blink prev · Ctrl-n blink next ·
-      #   Ctrl-h seamless split/pane nav across Neovim and zellij (see nvim.nix)
-      # zellij keeps everything else, driven from its Alt bindings (Alt-n new
-      # pane, Alt-h/j/k/l move focus, Alt-+/- resize, Alt-f float, Alt-[/] cycle
-      # layouts) plus Ctrl-g lock, Ctrl-t tab, Ctrl-o session, Ctrl-q quit.
+      # Every IDE shortcut has to survive a stock Ghostty on macOS and a stock
+      # Windows Terminal, on a French layout, with no terminal-side config.
+      # That leaves Ctrl+letter (except Ctrl-v, which Windows Terminal pastes
+      # with) and plain keys: Alt is Option on macOS, which types characters
+      # on non-US layouts; Windows Terminal owns Alt+arrows, Alt+Shift and
+      # most Ctrl+Shift chords; Cmd never reaches a terminal app; and AZERTY
+      # needs Shift or AltGr for digits and most punctuation.
       #
-      # Alt-t opens a new plain terminal tab (a zellij tab, not a stacked pane).
+      # So zellij gets a single Ctrl chord, Ctrl-g, as a tmux-style prefix:
+      # Ctrl-g then one plain key (h/j/k/l focus, t terminal, f float, c/n/p
+      # tabs, z zoom, x close pane, q close tab, r resize, s sessions, d
+      # detach; Ctrl-g again sends a literal Ctrl-g). The zjstatus bar lists
+      # the everyday ones while the prefix is active. Its other Normal-mode
+      # Ctrl chords are freed for the apps:
+      #   Ctrl-s save · Ctrl-p quick-open / blink prev · Ctrl-n blink next ·
+      #   Ctrl-h seamless split/pane nav (see nvim.nix) · Ctrl-o / Ctrl-t
+      #   Neovim's jump and tag stacks · Ctrl-b focus yazi · Ctrl-q Neovim's
+      #   visual block (Windows Terminal takes Ctrl-v), and no more quitting
+      #   the whole session by accident.
+      # The Alt bindings stay as accelerators where Alt exists (Windows
+      # Terminal, Linux), minus Alt-f: Ghostty sends Option-Right as Alt-f on
+      # macOS, which would toggle floating panes instead of moving a word.
+      # Locked mode is gone: nothing in Normal mode shadows the apps any more.
       extraConfig = ''
         keybinds {
             normal {
-                unbind "Ctrl s"
-                unbind "Ctrl p"
-                unbind "Ctrl n"
-                unbind "Ctrl h"
+                unbind "Ctrl s" "Ctrl p" "Ctrl n" "Ctrl h" "Ctrl o" "Ctrl b" "Ctrl t" "Ctrl q" "Alt f"
+                bind "Ctrl g" { SwitchToMode "Tmux"; }
 
                 // Add a new pane to the terminal stack (shows as a horizontal tab strip).
                 // Focus must land on the stack first; NewPane without stacked=true
                 // adds to the focused stack rather than creating an independent pane.
-                bind "Alt t" { MoveFocus "Right"; MoveFocus "Down"; NewPane; }
+                // The stack spans the full width under yazi and the editor, so Down
+                // reaches it from either.
+                bind "Alt t" { MoveFocus "Down"; NewPane; }
                 bind "Alt q" { CloseTab; }
+            }
+            // On top of zellij's own tmux-mode keys (h/j/k/l and arrows focus,
+            // c new tab, n/p next/previous tab, z zoom, x close pane, d detach,
+            // "/% split, , rename tab, [ scroll), each of which drops back to
+            // Normal.
+            tmux {
+                unbind "Ctrl b"
+                bind "Ctrl g" { Write 7; SwitchToMode "Normal"; }
+                bind "t" { MoveFocus "Down"; NewPane; SwitchToMode "Normal"; }
+                bind "f" { ToggleFloatingPanes; SwitchToMode "Normal"; }
+                bind "q" { CloseTab; SwitchToMode "Normal"; }
+                bind "r" { SwitchToMode "Resize"; }
+                bind "s" {
+                    LaunchOrFocusPlugin "session-manager" {
+                        floating true
+                        move_to_focused_tab true
+                    };
+                    SwitchToMode "Normal"
+                }
+            }
+            // Ctrl-g backs out of every other mode, instead of zellij's
+            // default of switching to Locked.
+            shared_except "normal" "locked" "tmux" {
+                bind "Ctrl g" { SwitchToMode "Normal"; }
             }
         }
       '';
