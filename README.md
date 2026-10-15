@@ -136,6 +136,7 @@ To test an uncommitted change from a flake that consumes this one:
 | `flake.nix` | Inputs, `homeModules.default`, `checks`, `formatter`, `lib.mkExampleHome` |
 | `modules/coding-ide/default.nix` | The options, the yazi sidebar, the zellij layouts and chrome, the helper scripts, the `coding` / `gitview` / `fif` shell functions |
 | `modules/coding-ide/nvim.nix` | The editor: nixvim plugins, LSPs, formatters, linters, keymaps |
+| `modules/coding-ide/icons.nix` | The Nerd Font glyphs both of the above use, as codepoints (literal ones get stripped in transit) |
 
 Both module files take this flake's inputs as a static argument (`flakeInputs`,
 applied with `lib.modules.importApply`) rather than through a `specialArgs`

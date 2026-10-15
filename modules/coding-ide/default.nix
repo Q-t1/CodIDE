@@ -20,6 +20,8 @@ flakeInputs:
 let
   cfg = config.programs.codingIde;
 
+  icons = import ./icons.nix;
+
   # Catppuccin Mocha (mauve accent) for yazi — matches the Neovim IDE's
   # colorscheme (nvim.nix) and the zellij chrome, so editor, picker and
   # multiplexer share one palette. Catppuccin ships a plain per-accent theme.toml
@@ -212,7 +214,7 @@ let
             command_git_branch {
                 command  "bash"
                 args     "-c" "b=$(git -C #{cwd} branch --show-current 2>/dev/null) || exit 0; [ -z \"$b\" ] && exit 0; [ -n \"$(git -C #{cwd} status --porcelain 2>/dev/null)\" ] && b=\"$b *\"; printf %s \"$b\""
-                format   "#[fg=#a6e3a1]  {stdout} "
+                format   "#[fg=#a6e3a1] ${icons.gitBranch} {stdout} "
                 interval "5"
             }
 

@@ -26,6 +26,8 @@ let
   cfg = config.programs.codingIde;
   clipboardProvider = cfg.clipboardProvider;
 
+  icons = import ./icons.nix;
+
   # WSL: try the fast native Wayland path (wl-copy/wl-paste) and fall back to
   # the always-present Windows tools (clip.exe / PowerShell Get-Clipboard),
   # since WSLg's Wayland socket isn't always reachable (detached shells, some
@@ -268,10 +270,10 @@ in
                 __unkeyed-1 = "diagnostics";
                 sources = [ "nvim_diagnostic" ];
                 symbols = {
-                  error = " ";
-                  warn = " ";
-                  info = " ";
-                  hint = " ";
+                  error = "${icons.error} ";
+                  warn = "${icons.warn} ";
+                  info = "${icons.info} ";
+                  hint = "${icons.hint} ";
                 };
                 update_in_insert = false;
               }
@@ -287,7 +289,7 @@ in
                       names[#names + 1] = c.name
                     end
                     if #names == 0 then return "no LSP" end
-                    return " " .. table.concat(names, ",")
+                    return "${icons.lsp} " .. table.concat(names, ",")
                   end
                 '';
               }
@@ -623,10 +625,10 @@ in
         source = true;
       };
       signs.text = {
-        "__rawKey__vim.diagnostic.severity.ERROR" = "";
-        "__rawKey__vim.diagnostic.severity.WARN" = "";
-        "__rawKey__vim.diagnostic.severity.INFO" = "";
-        "__rawKey__vim.diagnostic.severity.HINT" = "";
+        "__rawKey__vim.diagnostic.severity.ERROR" = icons.error;
+        "__rawKey__vim.diagnostic.severity.WARN" = icons.warn;
+        "__rawKey__vim.diagnostic.severity.INFO" = icons.info;
+        "__rawKey__vim.diagnostic.severity.HINT" = icons.hint;
       };
     };
 
