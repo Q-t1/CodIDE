@@ -3,15 +3,17 @@
 # socket so yazi/fif open files as native nvim tabs.
 #
 # This is a Home Manager module, exported as `homeModules.default` by this
-# flake. It takes the flake's own inputs by closure (`flakeInputs`) rather than
-# through a `specialArgs` named `inputs`, so it composes with any consuming
-# flake regardless of what that flake calls its own inputs. A host only ever
-# sets options under `programs.codingIde` (clipboard, nixd, claude CLI).
+# flake. It takes the flake's own inputs as a static argument (`flakeInputs`,
+# applied with `lib.modules.importApply`) rather than through a `specialArgs`
+# named `inputs`, so it composes with any consuming flake regardless of what
+# that flake calls its own inputs. A host turns it on with
+# `programs.codingIde.enable` and tunes it with the other options there
+# (clipboard, nixd, claude CLI).
 flakeInputs:
 {
-  pkgs,
-  lib,
   config,
+  lib,
+  pkgs,
   ...
 }:
 
@@ -23,20 +25,35 @@ let
   # multiplexer share one palette. Catppuccin ships a plain per-accent theme.toml
   # (not the yazi flavor-package format), so read it straight into
   # programs.yazi.theme; swap the filename for another accent under themes/mocha/.
-  catppuccinYaziTheme = builtins.fromTOML (
-    builtins.readFile "${
-      pkgs.fetchFromGitHub {
-        owner = "catppuccin";
-        repo = "yazi";
-        rev = "d62802be39210ea10e54b3e3b09735c6cb9e57c1";
-        hash = "sha256-bwzEO8exoBwa19q+jnYjHkaamGl2mhfukIEhDfUCRGI=";
-      }
-    }/themes/mocha/catppuccin-mocha-mauve.toml"
-  );
+  catppuccinYaziTheme = lib.importTOML "${flakeInputs.catppuccin-yazi}/themes/mocha/catppuccin-mocha-mauve.toml";
 
-  nvimBin = "${config.programs.nixvim.build.package}/bin/nvim";
-  zellijBin = "${pkgs.zellij}/bin/zellij";
-  lazygitBin = "${pkgs.lazygit}/bin/lazygit";
+  nvim = lib.getExe config.programs.nixvim.build.package;
+  zellij = lib.getExe config.programs.zellij.package;
+
+  # The helper scripts below are writeShellApplications: shellchecked at build
+  # time and run under `set -euo pipefail`. The ones that end up exec-ing an
+  # interactive Neovim call their tools by absolute path instead of through
+  # runtimeInputs, which would otherwise leak onto the PATH of every shell
+  # opened from inside that Neovim.
+
+  # Prints the zellij tab id of the calling pane, or nothing outside zellij.
+  # `list-panes --tab` is scoped to the calling pane's own tab, so filtering it
+  # down to this pane's id resolves "my tab" rather than "the focused tab" —
+  # switching tabs while a script runs can't make it act on the wrong one.
+  zellijTabId = pkgs.writeShellApplication {
+    name = "coding-tab-id";
+    runtimeInputs = [
+      config.programs.zellij.package
+      pkgs.jq
+    ];
+    text = ''
+      # shellcheck disable=SC2016 # $pane is a jq variable
+      zellij action list-panes --tab --json 2>/dev/null |
+        jq -r --argjson pane "''${ZELLIJ_PANE_ID:-null}" \
+          '.[] | select((.is_plugin | not) and .id == $pane) | .tab_id' 2>/dev/null ||
+        true
+    '';
+  };
 
   # Prints the socket path for *this tab's* Neovim. A session can hold more
   # than one "Coding" tab (the `coding` function's `-n "$ZELLIJ"` branch adds
@@ -45,15 +62,13 @@ let
   # session, or the second tab's Neovim fails to bind the first one's socket
   # (EADDRINUSE, pane exits immediately) while that tab's yazi keeps
   # "succeeding" by silently opening files into the first tab's Neovim.
-  # `list-panes --tab` is scoped to the calling pane's own tab, so filtering
-  # it down to this pane's id gives every pane in a tab the same tab_id
-  # (mirrors codingNvim's own tab-rename lookup below).
-  tabScopedSock = pkgs.writeShellScript "coding-tab-socket" ''
-    tab_id=$(${zellijBin} action list-panes --tab --json 2>/dev/null |
-      ${pkgs.jq}/bin/jq -r --argjson pane "$ZELLIJ_PANE_ID" \
-        '.[] | select((.is_plugin | not) and .id == $pane) | .tab_id' 2>/dev/null)
-    printf '/tmp/nvim-%s-%s.sock' "$ZELLIJ_SESSION_NAME" "''${tab_id:-0}"
-  '';
+  tabScopedSock = pkgs.writeShellApplication {
+    name = "coding-tab-socket";
+    text = ''
+      tab_id=$(${lib.getExe zellijTabId})
+      printf '/tmp/nvim-%s-%s.sock' "''${ZELLIJ_SESSION_NAME:-}" "''${tab_id:-0}"
+    '';
+  };
 
   # Starts Neovim listening on a tab-scoped socket so yazi, fif, and any
   # other pane in the same zellij tab can open files into the same instance
@@ -62,29 +77,50 @@ let
   #
   # It also names its own zellij tab "Coding | <folder>": a layout can't
   # interpolate the directory, so a fresh `coding` session would otherwise keep
-  # the static layout name. The tab is resolved from this pane's id rather than
-  # "the focused tab", so switching tabs during startup can't rename the wrong one.
-  codingNvim = pkgs.writeShellScript "coding-nvim" ''
-    sock=$(${tabScopedSock})
-    tab_id=$(${zellijBin} action list-panes --tab --json 2>/dev/null |
-      ${pkgs.jq}/bin/jq -r --argjson pane "$ZELLIJ_PANE_ID" \
-        '.[] | select((.is_plugin | not) and .id == $pane) | .tab_id' 2>/dev/null)
-    [ -n "$tab_id" ] && ${zellijBin} action rename-tab --tab-id "$tab_id" "Coding | ''${PWD##*/}"
-    exec ${nvimBin} --listen "$sock" "$@"
-  '';
+  # the static layout name.
+  codingNvim = pkgs.writeShellApplication {
+    name = "coding-nvim";
+    text = ''
+      sock=$(${lib.getExe tabScopedSock})
+      tab_id=$(${lib.getExe zellijTabId})
+      if [ -n "$tab_id" ]; then
+        ${zellij} action rename-tab --tab-id "$tab_id" "Coding | ''${PWD##*/}" || true
+      fi
+      exec ${nvim} --listen "$sock" "$@"
+    '';
+  };
 
-  # Opens $1 in this tab's Neovim via its socket, then focuses the editor
-  # pane. CodingIdeFocusEditor (nvim.nix) first moves nvim off any terminal
-  # or panel window so --remote's `:drop` opens the file as a buffer (a barbar
-  # tab) in an editor window. Called from yazi (left pane); move-focus Right
-  # always lands on the editor column.
-  openFileInNvim = pkgs.writeShellScript "open-file-in-nvim" ''
-    file=$(${pkgs.coreutils}/bin/realpath -- "$1")
-    sock=$(${tabScopedSock})
-    ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
-    ${nvimBin} --server "$sock" --remote "$file"
-    ${zellijBin} action move-focus Right
-  '';
+  # `coding-open FILE [LINE]` opens FILE (at LINE) in this tab's Neovim over
+  # its socket, and fails without doing anything when there is no such Neovim,
+  # so each caller picks its own fallback. CodingIdeFocusEditor (nvim.nix)
+  # first moves Neovim off any terminal or panel window, so --remote's `:drop`
+  # opens the file as a buffer (a barbar tab) in an editor window.
+  openInTabNvim = pkgs.writeShellApplication {
+    name = "coding-open";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      file=$(realpath -- "''${1:?usage: coding-open FILE [LINE]}")
+      line=''${2:-}
+      sock=$(${lib.getExe tabScopedSock})
+      [ -S "$sock" ] || exit 1
+      ${nvim} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
+      ${nvim} --server "$sock" --remote "$file"
+      if [ -n "$line" ]; then
+        ${nvim} --server "$sock" --remote-send "<Esc>:$line<CR>"
+      fi
+    '';
+  };
+
+  # yazi's `edit` opener: opens the picked file in this tab's Neovim, then
+  # focuses it — yazi is the left pane, so move-focus Right always lands on
+  # the editor column.
+  openFileInNvim = pkgs.writeShellApplication {
+    name = "open-file-in-nvim";
+    text = ''
+      ${lib.getExe openInTabNvim} "$1"
+      ${zellij} action move-focus Right
+    '';
+  };
 
   # yazi's built-in `S`/`s` search only ever surfaces files (never a matched
   # line) and its results don't route through the `edit` opener reliably. These
@@ -94,68 +130,67 @@ let
   #
   # Launched from yazi via `shell "<script>" --block`, so fzf takes over the
   # yazi (left) pane while running; on pick we hop focus Right to the editor.
-  yaziRgSearch = pkgs.writeShellScript "yazi-rg-search" ''
-    export PATH=${
-      lib.makeBinPath [
-        pkgs.ripgrep
-        pkgs.fzf
-        pkgs.bat
-        pkgs.coreutils
-        pkgs.gnused
-      ]
-    }:$PATH
-    RG_PREFIX="rg --column --line-number --no-heading --color=always --smart-case"
-    result=$(
-      : | fzf --ansi --disabled \
-          --bind "start:reload:$RG_PREFIX {q} || true" \
-          --bind "change:reload:sleep 0.1; $RG_PREFIX {q} || true" \
-          --delimiter ':' \
-          --preview 'bat --color=always --highlight-line {2} -- {1}' \
-          --preview-window 'right:60%,+{2}+3/3,border-left'
-    ) || exit 0
-    [ -z "$result" ] && exit 0
-    clean=$(printf '%s' "$result" | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g')
-    file=''${clean%%:*}
-    rest=''${clean#*:}
-    line=''${rest%%:*}
-    [ -z "$file" ] && exit 0
-    abs=$(realpath -- "$file")
-    sock=$(${tabScopedSock})
-    if [ -S "$sock" ]; then
-      ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
-      ${nvimBin} --server "$sock" --remote "$abs"
-      ${nvimBin} --server "$sock" --remote-send "<Esc>:''${line}<CR>"
-      ${zellijBin} action move-focus Right
-    else
-      ${nvimBin} "$abs" "+$line"
-    fi
-  '';
-  yaziFdSearch = pkgs.writeShellScript "yazi-fd-search" ''
-    export PATH=${
-      lib.makeBinPath [
-        pkgs.fd
-        pkgs.fzf
-        pkgs.bat
-        pkgs.coreutils
-      ]
-    }:$PATH
-    file=$(
-      fd --type f --hidden --follow --exclude .git |
-        fzf --ansi \
-            --preview 'bat --color=always -- {}' \
-            --preview-window 'right:60%,border-left'
-    ) || exit 0
-    [ -z "$file" ] && exit 0
-    abs=$(realpath -- "$file")
-    sock=$(${tabScopedSock})
-    if [ -S "$sock" ]; then
-      ${nvimBin} --server "$sock" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
-      ${nvimBin} --server "$sock" --remote "$abs"
-      ${zellijBin} action move-focus Right
-    else
-      ${nvimBin} "$abs"
-    fi
-  '';
+  yaziRgSearch = pkgs.writeShellApplication {
+    name = "yazi-rg-search";
+    runtimeInputs = with pkgs; [
+      ripgrep
+      fzf
+      bat
+      coreutils
+      gnused
+    ];
+    text = ''
+      RG_PREFIX="rg --column --line-number --no-heading --color=always --smart-case"
+      result=$(
+        : | fzf --ansi --disabled \
+            --bind "start:reload:$RG_PREFIX {q} || true" \
+            --bind "change:reload:sleep 0.1; $RG_PREFIX {q} || true" \
+            --delimiter ':' \
+            --preview 'bat --color=always --highlight-line {2} -- {1}' \
+            --preview-window 'right:60%,+{2}+3/3,border-left'
+      ) || exit 0
+      clean=$(printf '%s' "$result" | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g')
+      file=''${clean%%:*}
+      rest=''${clean#*:}
+      line=''${rest%%:*}
+      [ -n "$file" ] || exit 0
+      if ${lib.getExe openInTabNvim} "$file" "$line"; then
+        ${zellij} action move-focus Right
+      else
+        ${nvim} "$(realpath -- "$file")" "+$line"
+      fi
+    '';
+  };
+
+  yaziFdSearch = pkgs.writeShellApplication {
+    name = "yazi-fd-search";
+    runtimeInputs = with pkgs; [
+      fd
+      fzf
+      bat
+      coreutils
+    ];
+    # No pipefail: fd is usually still writing when fzf exits on a pick, and
+    # its SIGPIPE would turn every pick into a failure.
+    bashOptions = [
+      "errexit"
+      "nounset"
+    ];
+    text = ''
+      file=$(
+        fd --type f --hidden --follow --exclude .git |
+          fzf --ansi \
+              --preview 'bat --color=always -- {}' \
+              --preview-window 'right:60%,border-left'
+      ) || exit 0
+      [ -n "$file" ] || exit 0
+      if ${lib.getExe openInTabNvim} "$file"; then
+        ${zellij} action move-focus Right
+      else
+        ${nvim} "$(realpath -- "$file")"
+      fi
+    '';
+  };
 
   # Shared zellij chrome for both IDE layouts (coding + git): the built-in
   # tab-bar on top, and a zjstatus strip on the bottom showing the session
@@ -190,9 +225,11 @@ let
   '';
 in
 {
-  imports = [ (import ./nvim.nix flakeInputs) ];
+  imports = [ (lib.modules.importApply ./nvim.nix flakeInputs) ];
 
   options.programs.codingIde = {
+    enable = lib.mkEnableOption "CodIDE, the yazi + zellij + Neovim terminal IDE";
+
     clipboardProvider = lib.mkOption {
       type = lib.types.enum [
         "wsl"
@@ -270,10 +307,10 @@ in
     };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
     # IDE tooling the launcher and shell functions call interactively. The
-    # packaged helper scripts above carry their own deps via makeBinPath; these
-    # are the ones the *user's* shell invokes, so they go on PATH.
+    # packaged helper scripts above carry their own deps; these are the ones
+    # the *user's* shell invokes, so they go on PATH.
     home.packages =
       (with pkgs; [
         fd # yazi's file finder + `s` name search (the `coding` left pane)
@@ -290,45 +327,45 @@ in
     # Free Ctrl-S / Ctrl-Q from XON/XOFF flow control so the save keybind never
     # freezes an interactive terminal, and provide the `coding` launcher.
     programs.zsh.initContent = ''
-        [[ $- == *i* ]] && stty -ixon 2>/dev/null
+      [[ $- == *i* ]] && stty -ixon 2>/dev/null
 
-        # `coding [target]` opens the IDE inside a zellij "coding" layout (yazi file
-        # pane on the left, Neovim + a shell strip on the right), rooted at the target
-        # so yazi, the LSP and telescope all use that project. A file target skips the
-        # layout and just edits the file (keeps single-file / $EDITOR-style use fast).
-        # Inside an existing zellij session it adds a tab instead of nesting.
-        coding() {
-          local target="''${1:-.}"
-          if [[ -f "$target" ]]; then
-            nvim -- "$target"
-            return
-          fi
-          local dir="''${target:A}" # zsh: resolve to an absolute path
-          local tab_name="Coding | ''${dir:t}"
-          if [[ -n "$ZELLIJ" ]]; then
-            zellij action new-tab --layout coding --cwd "$dir" --name "$tab_name"
+      # `coding [target]` opens the IDE inside a zellij "coding" layout (yazi file
+      # pane on the left, Neovim + a shell strip on the right), rooted at the target
+      # so yazi, the LSP and telescope all use that project. A file target skips the
+      # layout and just edits the file (keeps single-file / $EDITOR-style use fast).
+      # Inside an existing zellij session it adds a tab instead of nesting.
+      coding() {
+        local target="''${1:-.}"
+        if [[ -f "$target" ]]; then
+          nvim -- "$target"
+          return
+        fi
+        local dir="''${target:A}" # zsh: resolve to an absolute path
+        local tab_name="Coding | ''${dir:t}"
+        if [[ -n "$ZELLIJ" ]]; then
+          zellij action new-tab --layout coding --cwd "$dir" --name "$tab_name"
+        else
+          local session_name="coding-''${dir:t}"
+          local _sessions
+          _sessions=$(zellij list-sessions 2>/dev/null)
+          # A live session has the name but no EXITED marker; an exited one shows
+          # "(EXITED - attach to resurrect)" — attaching resurrects it as a bare
+          # shell without the layout, which is the "run twice" bug. Delete the
+          # zombie and start fresh instead.
+          local _live
+          _live=$(echo "$_sessions" | grep -F "$session_name" | grep -vi 'EXITED')
+          if [[ -n "$_live" ]]; then
+            ( builtin cd -- "$dir" && zellij attach "$session_name" )
           else
-            local session_name="coding-''${dir:t}"
-            local _sessions
-            _sessions=$(zellij list-sessions 2>/dev/null)
-            # A live session has the name but no EXITED marker; an exited one shows
-            # "(EXITED - attach to resurrect)" — attaching resurrects it as a bare
-            # shell without the layout, which is the "run twice" bug. Delete the
-            # zombie and start fresh instead.
-            local _live
-            _live=$(echo "$_sessions" | grep -F "$session_name" | grep -vi 'EXITED')
-            if [[ -n "$_live" ]]; then
-              ( builtin cd -- "$dir" && zellij attach "$session_name" )
-            else
-              zellij delete-session "$session_name" 2>/dev/null
-              # Use -n/--new-session-with-layout, NOT --layout: with -s present,
-              # `--layout coding` means "add a tab to session coding-<dir>", which
-              # doesn't exist yet, so zellij errors "Session not found". -n always
-              # starts a new session, so it composes with -s.
-              ( builtin cd -- "$dir" && zellij -s "$session_name" -n coding )
-            fi
+            zellij delete-session "$session_name" 2>/dev/null
+            # Use -n/--new-session-with-layout, NOT --layout: with -s present,
+            # `--layout coding` means "add a tab to session coding-<dir>", which
+            # doesn't exist yet, so zellij errors "Session not found". -n always
+            # starts a new session, so it composes with -s.
+            ( builtin cd -- "$dir" && zellij -s "$session_name" -n coding )
           fi
-        }
+        fi
+      }
 
       # `gitview [dir]` opens a dedicated git tab (full-screen lazygit). Inside
       # an existing zellij session it adds a tab; outside it starts a new session.
@@ -358,20 +395,16 @@ in
                 --preview 'bat --color=always --highlight-line {2} -- {1}' \
                 --preview-window 'right:60%,+{2}+3/3,border-left'
         ) || return
-        local clean file rest line abs sock
+        local clean file rest line
         clean=$(printf '%s' "$result" | sed 's/\x1b\[[0-9;]*[mGKHF]//g')
         file="''${clean%%:*}"
         rest="''${clean#*:}"
         line="''${rest%%:*}"
-        abs=$(realpath -- "$file")
-        sock=$(${tabScopedSock})
-        if [[ -S "''${sock}" ]]; then
-          ${zellijBin} action move-focus Up
-          ${nvimBin} --server "''${sock}" --remote-expr "v:lua.CodingIdeFocusEditor()" >/dev/null
-          ${nvimBin} --server "''${sock}" --remote "''${abs}"
-          ${nvimBin} --server "''${sock}" --remote-send "<Esc>:''${line}<CR>"
+        # fif runs in the terminal strip under the editor, hence Up.
+        if ${lib.getExe openInTabNvim} "$file" "$line"; then
+          ${zellij} action move-focus Up
         else
-          nvim "''${abs}" "+''${line}"
+          nvim "$(realpath -- "$file")" "+$line"
         fi
       }
     '';
@@ -414,7 +447,7 @@ in
         # → nvim --remote with no file), with no error visible anywhere.
         opener.edit = [
           {
-            run = "${openFileInNvim} %s";
+            run = "${lib.getExe openFileInNvim} %s";
             desc = "Open in editor";
             block = false;
           }
@@ -462,12 +495,12 @@ in
       keymap.mgr.prepend_keymap = [
         {
           on = "S";
-          run = ''shell "${yaziRgSearch}" --block'';
+          run = ''shell "${lib.getExe yaziRgSearch}" --block'';
           desc = "Search file contents (rg) → open at match";
         }
         {
           on = "s";
-          run = ''shell "${yaziFdSearch}" --block'';
+          run = ''shell "${lib.getExe yaziFdSearch}" --block'';
           desc = "Search files by name (fd) → open";
         }
       ];
@@ -519,7 +552,7 @@ in
             }
             tab name="git" focus=true {
                 pane name="lazygit" focus=true {
-                    command "${lazygitBin}"
+                    command "${lib.getExe pkgs.lazygit}"
                 }
             }
         }
@@ -545,11 +578,11 @@ in
             tab name="Coding" focus=true {
                 pane split_direction="vertical" {
                     pane size="24%" name="files" focus=true {
-                        command "${config.programs.yazi.finalPackage}/bin/yazi"
+                        command "${lib.getExe config.programs.yazi.finalPackage}"
                     }
                     pane split_direction="horizontal" {
                         pane size="80%" name="editor" {
-                            command "${codingNvim}"
+                            command "${lib.getExe codingNvim}"
                         }
                         pane stacked=true {
                             pane name="terminal"

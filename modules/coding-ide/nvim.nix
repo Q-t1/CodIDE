@@ -11,9 +11,9 @@
 # the note there); nothing here reads the consuming flake's `specialArgs`.
 flakeInputs:
 {
-  pkgs,
-  lib,
   config,
+  lib,
+  pkgs,
   ...
 }:
 
@@ -101,12 +101,12 @@ in
 {
   imports = [ flakeInputs.nixvim.homeModules.nixvim ];
 
-  # The shared base (config/common/home.nix) enables programs.neovim, which also
-  # wants to own ~/.config/nvim. nixvim manages that directory itself, so turn
-  # the plain neovim module off here to avoid a collision.
-  programs.neovim.enable = lib.mkForce false;
+  # Home Manager's plain programs.neovim also wants to own ~/.config/nvim (and
+  # the vi/vim aliases). nixvim manages all of that itself, so force the plain
+  # module off even where the host's own config enables it.
+  programs.neovim.enable = lib.mkIf cfg.enable (lib.mkForce false);
 
-  programs.nixvim = {
+  programs.nixvim = lib.mkIf cfg.enable {
     enable = true;
     defaultEditor = true;
     viAlias = true;
@@ -130,15 +130,6 @@ in
     globals = {
       mapleader = " ";
       maplocalleader = " ";
-
-      # vim-visual-multi: bind VSCode's Ctrl-d ("select next occurrence") and
-      # Ctrl-shift-l ("select all occurrences") to the multi-cursor engine.
-      VM_maps = {
-        "Find Under" = "<C-d>";
-        "Find Subword Under" = "<C-d>";
-        "Select All" = "<C-S-l>";
-      };
-      VM_show_warnings = 0;
 
       # yazi is the file manager (its own left zellij pane); disable netrw so
       # `nvim <dir>` doesn't open a directory buffer (on 0.12 `gx` uses
@@ -221,7 +212,29 @@ in
       # modified dots, click-to-switch and middle-click-to-close. Files sent
       # from yazi/fif land here (see CodingIdeFocusEditor in extraConfigLua).
       barbar.enable = true;
-      which-key.enable = true;
+
+      which-key = {
+        enable = true;
+        # Name the <leader> menus so the popup reads as labelled groups
+        # instead of a flat key list.
+        settings.spec =
+          lib.mapAttrsToList
+            (key: group: {
+              __unkeyed-1 = "<leader>${key}";
+              inherit group;
+            })
+            {
+              a = "AI / Claude";
+              b = "File";
+              c = "Code";
+              f = "Find";
+              g = "Git";
+              q = "Session";
+              s = "Search / replace";
+              x = "Diagnostics";
+            };
+      };
+
       indent-blankline.enable = true;
       todo-comments.enable = true;
       fidget.enable = true; # LSP progress spinner
@@ -287,8 +300,9 @@ in
 
       # ---- Navigation -------------------------------------------------------
       # The file manager is yazi, running as its own persistent left zellij pane
-      # (see home.nix). It opens files here over a socket, so nothing about the
-      # tree lives in this file. Telescope stays for fuzzy find / grep / symbols.
+      # (see ./default.nix). It opens files here over a socket, so nothing about
+      # the tree lives in this file. Telescope stays for fuzzy find / grep /
+      # symbols.
 
       # flash.nvim: label-based on-screen jumps (the IntelliJ/AceJump motion).
       # `s` + two chars labels every match to hop anywhere visible; `S` jumps by
@@ -321,6 +335,42 @@ in
       nvim-autopairs.enable = true;
       nvim-surround.enable = true;
       comment.enable = true;
+
+      # VSCode-style multi-cursor: Ctrl-d selects the next occurrence,
+      # Ctrl-Shift-l all of them.
+      visual-multi = {
+        enable = true;
+        settings = {
+          maps = {
+            "Find Under" = "<C-d>";
+            "Find Subword Under" = "<C-d>";
+            "Select All" = "<C-S-l>";
+          };
+          show_warnings = 0;
+        };
+      };
+
+      # Project-wide find & replace, editable in place (VSCode's Ctrl-Shift-F
+      # Search panel). Opens a buffer listing every match across the project;
+      # edit the "Replace" line and :w / <leader>sr-apply to rewrite all files.
+      grug-far.enable = true;
+
+      # ---- Claude Code ------------------------------------------------------
+      # Mirrors the VSCode/JetBrains extension: shared selection, in-editor
+      # diffs, and a `claude` terminal. auto_start is off so the WebSocket
+      # bridge only comes up when you open Claude. The `claude` binary itself
+      # comes from `dependencies` below.
+      claudecode = {
+        enable = true;
+        settings = {
+          auto_start = false;
+          terminal = {
+            provider = "native";
+            split_side = "right";
+            split_width_percentage = 0.35;
+          };
+        };
+      };
 
       # Integrated terminal panel at the bottom (VSCode's Ctrl-` panel).
       # Opened with <leader>t (Space t) — Windows Terminal can't deliver
@@ -382,6 +432,10 @@ in
         };
       };
       treesitter-context.enable = true;
+
+      # Helm charts: vim-helm sets filetype=helm on templates so the YAML server
+      # does not choke on Go templating; helm_ls (under lsp) serves them.
+      helm.enable = true;
 
       # ---- Markdown reading -------------------------------------------------
       # render-markdown.nvim turns a raw `.md` buffer into a formatted document
@@ -471,6 +525,14 @@ in
             };
           };
 
+          # Helm templates (filetype=helm, see plugins.helm): completion and
+          # hover for chart values, with yaml-language-server driven for the
+          # YAML parts.
+          helm_ls = {
+            enable = true;
+            settings.helm-ls.yamlls.path = "yaml-language-server";
+          };
+
           # JSON / JSONC (with SchemaStore catalog).
           jsonls.enable = true;
 
@@ -542,40 +604,40 @@ in
       };
     };
 
-    # Helm charts: towolf/vim-helm sets filetype=helm for templates so the YAML
-    # server does not choke on Go templating, and helm-ls (wired below) provides
-    # completion/hover for chart values.
-    extraPlugins = with pkgs.vimPlugins; [
-      vim-helm
-      vim-visual-multi # VSCode-style multi-cursor (Ctrl-d)
-      claudecode-nvim # Claude Code IDE integration (like the VSCode extension)
-      grug-far-nvim # VSCode-style project-wide find & replace (Search panel)
-    ];
+    # Inline diagnostics UX. Neovim's defaults leave virtual text off, so
+    # errors only show in the gutter/float; turn on IntelliJ-style inline
+    # messages, sort by severity so the worst wins a line, and give floats a
+    # border. Nerd Font sign glyphs (the terminal already has one for
+    # web-devicons) replace the default letters.
+    diagnostic.settings = {
+      severity_sort = true;
+      underline = true;
+      update_in_insert = false;
+      virtual_text = {
+        spacing = 2;
+        source = "if_many";
+        prefix = "●";
+      };
+      float = {
+        border = "rounded";
+        source = true;
+      };
+      signs.text = {
+        "__rawKey__vim.diagnostic.severity.ERROR" = "";
+        "__rawKey__vim.diagnostic.severity.WARN" = "";
+        "__rawKey__vim.diagnostic.severity.INFO" = "";
+        "__rawKey__vim.diagnostic.severity.HINT" = "";
+      };
+    };
 
-    # nixvim has no helm_ls option, so register it with Neovim's built-in LSP
-    # API. The older `require('lspconfig').helm_ls.setup()` framework is
-    # deprecated on 0.11+; its warning would otherwise pop up as a startup
-    # toast now that nvim-notify intercepts vim.notify.
     extraConfigLua = ''
       -- ui2 (experimental core messages/cmdline UI): with cmdheight=0 (opts)
       -- messages go to an ephemeral float instead of hit-enter prompts.
       require("vim._core.ui2").enable({ msg = { targets = "msg" } })
 
-      vim.lsp.config("helm_ls", {
-        cmd = { "helm_ls", "serve" },
-        filetypes = { "helm" },
-        root_markers = { "Chart.yaml" },
-        settings = {
-          ["helm-ls"] = {
-            yamlls = { path = "yaml-language-server" },
-          },
-        },
-      })
-      vim.lsp.enable("helm_ls")
-
       -- The file manager is yazi, running as its own persistent left zellij pane
-      -- (see home.nix: the `coding` layout). Neovim starts with --listen on a
-      -- session-scoped socket; yazi/fif open files via --remote so they appear
+      -- (see ./default.nix: the `coding` layout). Neovim starts with --listen on
+      -- a tab-scoped socket; yazi/fif open files via --remote so they appear
       -- as buffers in the barbar tabline at the top of the editor pane.
       -- <S-h>/<S-l> cycle those buffers; <C-b>/<leader>e move focus to yazi.
 
@@ -609,18 +671,6 @@ in
         end,
       })
 
-      -- Claude Code integration — mirrors the VSCode/JetBrains extension:
-      -- shared selection, in-editor diffs, and a `claude` terminal. auto_start
-      -- is off so the WebSocket bridge only comes up when you open Claude.
-      require("claudecode").setup({
-        auto_start = false,
-        terminal = {
-          provider = "native",
-          split_side = "right",
-          split_width_percentage = 0.35,
-        },
-      })
-
       -- Name the surrounding zellij tab after the project whenever the IDE is
       -- opened on one, so tabs read "config-manager" instead of zellij's
       -- default "Tab #1". Prefer the git repo root's name, falling back to the
@@ -649,11 +699,6 @@ in
         end,
       })
 
-      -- Project-wide find & replace, editable in place (VSCode's Ctrl-Shift-F
-      -- Search panel). Opens a buffer listing every match across the project;
-      -- edit the "Replace" line and :w / <leader>sr-apply to rewrite all files.
-      require("grug-far").setup({})
-
       -- System-clipboard bridge, chosen per host (see clipboardProvider in
       -- the let block: WSL → Windows tools, macOS → pbcopy/pbpaste, headless
       -- containers → OSC 52 terminal escapes).
@@ -669,7 +714,7 @@ in
       -- space (the zellij analogue of vim-tmux-navigator). Moving *into* Neovim
       -- from another zellij pane uses zellij's own Alt-h/j/k/l — in a shell pane
       -- Ctrl-h is backspace, so it can't be the universal mover. The zellij keys
-      -- that would otherwise shadow these Ctrl chords are freed in home.nix.
+      -- that would otherwise shadow these Ctrl chords are freed in ./default.nix.
       local function zellij_nav(nvim_dir, zellij_dir)
         local before = vim.api.nvim_get_current_win()
         vim.cmd.wincmd(nvim_dir)
@@ -687,27 +732,6 @@ in
           zellij_nav(m[1], m[2])
         end, { desc = "Navigate window/pane " .. m[2] })
       end
-
-      -- Inline diagnostics UX. Neovim's defaults leave virtual text off, so
-      -- errors only show in the gutter/float; turn on IntelliJ-style inline
-      -- messages, sort by severity so the worst wins a line, and give floats a
-      -- border. Nerd Font sign glyphs (the terminal already has one for
-      -- web-devicons) replace the default letters.
-      vim.diagnostic.config({
-        severity_sort = true,
-        underline = true,
-        update_in_insert = false,
-        virtual_text = { spacing = 2, source = "if_many", prefix = "●" },
-        float = { border = "rounded", source = true },
-        signs = {
-          text = {
-            [vim.diagnostic.severity.ERROR] = "",
-            [vim.diagnostic.severity.WARN] = "",
-            [vim.diagnostic.severity.INFO] = "",
-            [vim.diagnostic.severity.HINT] = "",
-          },
-        },
-      })
 
       -- Inlay hints (parameter names, inferred types) — the closest thing to
       -- VSCode/IntelliJ hints. Enabled per-buffer on attach; servers that don't
@@ -763,19 +787,6 @@ in
         callback = function()
           vim.opt_local.spell = true
         end,
-      })
-
-      -- Name the which-key <leader> menus so the popup reads as labelled groups
-      -- instead of a flat key list.
-      require("which-key").add({
-        { "<leader>a", group = "AI / Claude" },
-        { "<leader>b", group = "File" },
-        { "<leader>c", group = "Code" },
-        { "<leader>f", group = "Find" },
-        { "<leader>g", group = "Git" },
-        { "<leader>q", group = "Session" },
-        { "<leader>s", group = "Search / replace" },
-        { "<leader>x", group = "Diagnostics" },
       })
 
       -- Full git UI (stage/commit/branch/rebase) floated over the editor, the
@@ -951,6 +962,14 @@ in
       })
     '';
 
+    # `claude` CLI on Neovim's PATH, for claudecode.nvim. Which build (and
+    # whether at all) is the host's call — see programs.codingIde.claudeCode.
+    # Set explicitly because the plugin would otherwise pull nixvim's own
+    # (unfree) pkgs.claude-code.
+    dependencies.claude-code = {
+      inherit (cfg.claudeCode) enable package;
+    };
+
     # Formatters / linters / kube tooling that must be on Neovim's PATH.
     # (LSP server binaries are added automatically by the server options above.)
     extraPackages =
@@ -961,15 +980,11 @@ in
         stylua
         shfmt
         yamllint
-        helm-ls
         kubeconform
         kustomize
         lazygit # full git UI, floated on <leader>gg (see extraConfigLua)
         ripgrep # `rg` backs grug-far's find & replace (and Telescope live_grep)
       ]
-      # `claude` CLI, used by the claudecode.nvim integration. Which build (and
-      # whether at all) is the host's call — see programs.codingIde.claudeCode.
-      ++ lib.optional cfg.claudeCode.enable cfg.claudeCode.package
       # wl-copy/wl-paste: the fast path for the WSL clipboard bridge only. It is
       # a Linux-only package (it pulls wayland), so every other provider —
       # notably macOS' pbcopy — must not drag it in.

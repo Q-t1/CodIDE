@@ -12,7 +12,7 @@ the editor, **zellij** holding the two together, plus **lazygit** and the
 └───────┘└───────────────────────────────┘
 ```
 
-Neovim runs with `--listen` on a per-session socket, so picking a file in yazi
+Neovim runs with `--listen` on a per-tab socket, so picking a file in yazi
 (or in the `fif` / `s` / `S` fuzzy searches) opens it as a buffer in the *same*
 Neovim instance instead of a new pane.
 
@@ -23,13 +23,15 @@ nixpkgs on Neovim's PATH — nothing is installed at runtime.
 
 Add the flake as an input and import `homeModules.default` into a Home Manager
 configuration. Make it follow your nixpkgs so the IDE is built from the same
-revision as the rest of your host:
+revision as the rest of your host (and your home-manager, which this flake only
+uses for its own `checks`, so your lock file carries one copy):
 
 ```nix
 {
   inputs.codide = {
     url = "github:Q-t1/CodIDE";
     inputs.nixpkgs.follows = "nixpkgs";
+    inputs.home-manager.follows = "home-manager";
   };
 }
 ```
@@ -40,7 +42,10 @@ revision as the rest of your host:
 {
   imports = [ inputs.codide.homeModules.default ];
 
-  programs.codingIde.clipboardProvider = "pbcopy";
+  programs.codingIde = {
+    enable = true;
+    clipboardProvider = "pbcopy";
+  };
 }
 ```
 
@@ -54,7 +59,7 @@ Then, in a shell:
 |------------------|--------------------------------------------------------------|
 | `coding [dir]`   | Open the IDE on a directory (a new zellij session, or a tab inside one). A file argument just edits the file. |
 | `gitview [dir]`  | A full-screen lazygit tab.                                   |
-| `fif <pattern>`  | ripgrep + fzf content search; the pick opens at the matched line in the session's Neovim. |
+| `fif <pattern>`  | ripgrep + fzf content search; the pick opens at the matched line in the tab's Neovim. |
 
 Inside the IDE: `Enter` in yazi opens a file in the editor, `s` / `S` are
 fuzzy file / content search, `Alt-t` adds a terminal tab, `Alt-q` closes a tab,
@@ -67,6 +72,7 @@ All under `programs.codingIde`:
 
 | Option | Default | What it is |
 |--------|---------|------------|
+| `enable` | `false` | Turn the IDE on. Importing the module alone changes nothing. |
 | `clipboardProvider` | `"osc52"` | How Neovim and zellij reach the system clipboard: `"wsl"` (WSLg `wl-copy`, falling back to `clip.exe`), `"pbcopy"` (macOS), `"osc52"` (terminal escapes — works headless / over SSH), `"none"` (leave Neovim's autodetection alone). Only `"wsl"` pulls in the Linux-only `wl-clipboard`. |
 | `claudeCode.enable` | `true` | Put `claude` on the shell's and Neovim's PATH (claudecode.nvim drives it in-editor). |
 | `claudeCode.package` | this flake's `claude-code` input | Which `claude` build to use — set it to `pkgs.claude-code` on a host that already overlays one in. |
@@ -106,29 +112,32 @@ option *names* come from the modules, not from your values.
 ## Hack on it
 
 ```
-nix fmt                    # nixfmt over the tree
-nix flake check            # builds the IDE for a dummy user on this system
+nix fmt                    # nixfmt-tree over the tree
+nix flake check            # formatting, then the IDE built for a dummy user on this system
 ```
 
 `nix flake check` is heavy — it builds Neovim with every plugin, LSP and
 formatter — but it is the cheapest way to catch an option rename in nixvim or
-Home Manager before a host does. `lib.mkExampleHome { system = "..."; }` is the
-same thing, and takes extra `modules` if you want to try an option out.
+Home Manager before a host does. The helper scripts are
+`writeShellApplication`s, so the same build also shellchecks them.
+`lib.mkExampleHome { system = "..."; }` is the same build, and takes extra
+`modules` if you want to try an option out.
 
 To test an uncommitted change from a flake that consumes this one:
 
 ```
---override-input codide path:/Users/quentin/Projects/CodIDE
+--override-input codide path:/path/to/CodIDE
 ```
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `flake.nix` | Inputs, `homeModules.default`, `checks`, `lib.mkExampleHome` |
-| `modules/coding-ide/default.nix` | The options, the yazi sidebar, the zellij layouts and chrome, the `coding` / `gitview` / `fif` shell functions |
+| `flake.nix` | Inputs, `homeModules.default`, `checks`, `formatter`, `lib.mkExampleHome` |
+| `modules/coding-ide/default.nix` | The options, the yazi sidebar, the zellij layouts and chrome, the helper scripts, the `coding` / `gitview` / `fif` shell functions |
 | `modules/coding-ide/nvim.nix` | The editor: nixvim plugins, LSPs, formatters, linters, keymaps |
 
-Both module files take this flake's inputs by closure (`flakeInputs`) rather
-than through a `specialArgs` named `inputs`, so they compose with any consuming
-flake whatever it calls its own arguments.
+Both module files take this flake's inputs as a static argument (`flakeInputs`,
+applied with `lib.modules.importApply`) rather than through a `specialArgs`
+named `inputs`, so they compose with any consuming flake whatever it calls its
+own arguments.

@@ -18,14 +18,20 @@
     # — see programs.codingIde.claudeCode in modules/coding-ide/default.nix.
     claude-code.url = "github:sadjow/claude-code-nix";
 
+    # yazi's Catppuccin theme, which the module parses at evaluation time. As a
+    # flake input it is fetched (and locked) before evaluation; a fetcher inside
+    # the module would make that parse import-from-derivation.
+    catppuccin-yazi = {
+      url = "github:catppuccin/yazi";
+      flake = false;
+    };
+
     # Only used by `checks` (a throwaway home configuration that proves the
     # module evaluates and builds); the exported module itself does not need it.
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
-    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs =
@@ -33,43 +39,35 @@
       self,
       nixpkgs,
       home-manager,
-      flake-utils,
       ...
     }:
     let
-      systems = [
-        "aarch64-darwin"
-        "x86_64-darwin"
-        "aarch64-linux"
-        "x86_64-linux"
-      ];
+      inherit (nixpkgs) lib;
 
-      # The module takes this flake's inputs by closure rather than through a
-      # `specialArgs` named `inputs`, so it drops into any consuming flake
-      # without colliding with that flake's own module arguments.
-      codingIde = import ./modules/coding-ide inputs;
+      # x86_64-darwin is gone: nixpkgs no longer evaluates for it.
+      forAllSystems =
+        f:
+        lib.genAttrs [
+          "aarch64-darwin"
+          "aarch64-linux"
+          "x86_64-linux"
+        ] (system: f nixpkgs.legacyPackages.${system});
+
+      # The module takes this flake's inputs as a static argument rather than
+      # through a `specialArgs` named `inputs`, so it drops into any consuming
+      # flake without colliding with that flake's own module arguments.
+      # importApply (unlike a bare `import`) records the file, so module-system
+      # errors point at it instead of at `<unknown-file>`.
+      codingIde = lib.modules.importApply ./modules/coding-ide inputs;
     in
-    flake-utils.lib.eachSystem systems (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-        formatter = pkgs.nixfmt;
-
-        # `nix flake check` builds the IDE for a dummy user on this system —
-        # the cheapest way to catch an option rename in nixvim or Home Manager
-        # before a host does. Heavy: it builds Neovim with every plugin, LSP
-        # and formatter.
-        checks.coding-ide = self.lib.mkExampleHome { inherit system; };
-      }
-    )
-    // {
+    {
       homeModules = {
         coding-ide = codingIde;
         default = codingIde;
       };
 
+      # A throwaway home configuration with the IDE enabled, built by `checks`.
+      # Extra `modules` are a quick way to try an option out.
       lib.mkExampleHome =
         {
           system,
@@ -80,17 +78,40 @@
           pkgs = nixpkgs.legacyPackages.${system};
           modules = [
             codingIde
-            {
-              home = {
-                inherit username;
-                homeDirectory =
-                  if nixpkgs.lib.hasSuffix "-darwin" system then "/Users/${username}" else "/home/${username}";
-                stateVersion = "26.05";
-              };
-              programs.home-manager.enable = true;
-            }
+            (
+              { pkgs, ... }:
+              {
+                home = {
+                  inherit username;
+                  homeDirectory =
+                    if pkgs.stdenv.hostPlatform.isDarwin then "/Users/${username}" else "/home/${username}";
+                  stateVersion = "26.05";
+                };
+                programs = {
+                  home-manager.enable = true;
+                  codingIde.enable = true;
+                  # The `coding` / `gitview` / `fif` shell functions are zsh's.
+                  zsh.enable = true;
+                };
+              }
+            )
           ]
           ++ modules;
         }).activationPackage;
+
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
+
+      checks = forAllSystems (pkgs: {
+        # Cheap, so it fails fast before the heavy build below.
+        format = pkgs.runCommandLocal "check-format" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+          find ${self} -name '*.nix' -exec nixfmt --check {} +
+          touch $out
+        '';
+
+        # Builds the IDE for a dummy user on this system — the cheapest way to
+        # catch an option rename in nixvim or Home Manager before a host does.
+        # Heavy: it builds Neovim with every plugin, LSP and formatter.
+        coding-ide = self.lib.mkExampleHome { inherit (pkgs.stdenv.hostPlatform) system; };
+      });
     };
 }
