@@ -94,7 +94,7 @@ they get through.
 | `Space gg` | Neovim | lazygit in a floating pane |
 | `Ctrl-q` | Neovim | Visual block (Windows Terminal pastes on `Ctrl-v`) |
 
-While the prefix is active, the status bar lists its everyday keys. `Alt-h/j/k/l`,
+While the prefix is active, the top bar lists its everyday keys. `Alt-h/j/k/l`,
 `Alt-t` and `Alt-q` still work where `Alt` exists (Windows Terminal, Linux).
 
 ## Options

@@ -192,21 +192,23 @@ let
     '';
   };
 
-  # Shared zellij chrome for both IDE layouts (coding + git): the built-in
-  # tab-bar on top, and a zjstatus strip on the bottom that stays blank in
-  # Normal mode and lists the everyday Ctrl-g prefix keys (or the resize-mode
-  # keys) while that mode is active — there is no zellij status-bar plugin to
-  # show them otherwise. Factored out here so the two layouts stay identical
-  # instead of drifting. The hint stays under 80 columns: zjstatus can't
-  # shrink a centre wider than the window, and the whole bar breaks.
+  # Shared zellij chrome for both IDE layouts (coding + git): a single zjstatus
+  # line on top, so no row is spent on a bottom bar. Tabs on the left; on the
+  # right, the everyday Ctrl-g prefix keys (or the resize-mode keys) while that
+  # mode is active, nothing in Normal mode — there is no zellij status-bar
+  # plugin to show them otherwise. When the hint doesn't fit beside the tabs,
+  # the tabs give way to it. Factored out here so the two layouts stay
+  # identical instead of drifting.
   zellijChrome = ''
     pane size=1 borderless=true {
-        plugin location="zellij:tab-bar"
-    }
-    children
-    pane size=1 borderless=true {
         plugin location="file:${pkgs.zellijPlugins.zjstatus}" {
-            format_center "{mode}"
+            format_left   "{tabs}"
+            format_right  "{mode}"
+            format_hide_on_overlength "true"
+            format_precedence         "rlc"
+
+            tab_normal "#[fg=#6c7086] {name} "
+            tab_active "#[bg=#cba6f7,fg=#1e1e2e,bold] {name} "
 
             mode_normal          ""
             mode_tmux            "#[bg=#cba6f7,fg=#1e1e2e,bold] CTRL-G #[fg=#cba6f7] hjkl focus · t term · c/n/p tab · z zoom · x/q close · r resize "
@@ -214,6 +216,7 @@ let
             mode_default_to_mode "normal"
         }
     }
+    children
   '';
 in
 {
