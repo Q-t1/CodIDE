@@ -20,8 +20,6 @@ flakeInputs:
 let
   cfg = config.programs.codingIde;
 
-  icons = import ./icons.nix;
-
   # Catppuccin Mocha (mauve accent) for yazi — matches the Neovim IDE's
   # colorscheme (nvim.nix) and the zellij chrome, so editor, picker and
   # multiplexer share one palette. Catppuccin ships a plain per-accent theme.toml
@@ -195,20 +193,12 @@ let
   };
 
   # Shared zellij chrome for both IDE layouts (coding + git): the built-in
-  # tab-bar on top, and a zjstatus strip on the bottom showing the session
-  # name (left) and the git branch + clock (right). The branch command appends
-  # a " *" when the tree is dirty (tracked changes or untracked files), so the
-  # status bar doubles as a "you have uncommitted work" indicator; it runs in
-  # the focused pane's directory, so it follows the project in view. The
-  # centre stays empty in Normal mode and lists the everyday Ctrl-g prefix keys
-  # (or the resize-mode keys) while that mode is active — there is no zellij
-  # status-bar plugin to show them otherwise. Factored out here so the
-  # two layouts stay identical instead of drifting.
-  #
-  # zjstatus reads flat keys only (`datetime_timezone`, not a `datetime { }`
-  # block — a nested block reaches it as raw text, newline included, and
-  # wipes the whole bar). It splits `_command` itself, honouring quotes but
-  # keeping backslashes, so the script stays free of them.
+  # tab-bar on top, and a zjstatus strip on the bottom that stays blank in
+  # Normal mode and lists the everyday Ctrl-g prefix keys (or the resize-mode
+  # keys) while that mode is active — there is no zellij status-bar plugin to
+  # show them otherwise. Factored out here so the two layouts stay identical
+  # instead of drifting. The hint stays under 80 columns: zjstatus can't
+  # shrink a centre wider than the window, and the whole bar breaks.
   zellijChrome = ''
     pane size=1 borderless=true {
         plugin location="zellij:tab-bar"
@@ -216,29 +206,12 @@ let
     children
     pane size=1 borderless=true {
         plugin location="file:${pkgs.zellijPlugins.zjstatus}" {
-            format_left   "#[fg=#cba6f7,bold] {session} "
             format_center "{mode}"
-            format_right  "{command_git_branch}{datetime}"
-            // When the prefix hint doesn't fit beside them, the session name
-            // and branch/clock give way to it instead of the bar overflowing.
-            // The hint itself stays under 80 columns: zjstatus can't shrink
-            // a centre wider than the window, and the whole bar breaks.
-            format_hide_on_overlength "true"
-            format_precedence         "clr"
 
             mode_normal          ""
             mode_tmux            "#[bg=#cba6f7,fg=#1e1e2e,bold] CTRL-G #[fg=#cba6f7] hjkl focus · t term · c/n/p tab · z zoom · x/q close · r resize "
             mode_resize          "#[bg=#f9e2af,fg=#1e1e2e,bold] RESIZE #[fg=#f9e2af] h/j/k/l grow · H/J/K/L shrink · Esc done "
             mode_default_to_mode "normal"
-
-            command_git_branch_command  "sh -c 'b=$(git branch --show-current 2>/dev/null) || exit 0; [ -n \"$b\" ] || exit 0; [ -z \"$(git status --porcelain 2>/dev/null)\" ] || b=\"$b *\"; printf %s \"$b\"'"
-            command_git_branch_cwd      "{focused_pane_cwd}"
-            command_git_branch_format   "#[fg=#a6e3a1] ${icons.gitBranch} {stdout} "
-            command_git_branch_interval "5"
-
-            datetime          "#[fg=#6c7086,italic] {format} "
-            datetime_format   "%H:%M"
-            datetime_timezone "Europe/Paris"
         }
     }
   '';
